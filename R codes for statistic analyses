@@ -5,11 +5,6 @@ date: "August 10 2024"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_knit$set(root.dir = "C:/Users/mebb0010/Dropbox/Microbiome/Datafiler_MemO_Microbiome/.")
-knitr::opts_chunk$set(eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE, results='hide')
-```
-
 ```{r}
 #load packages:
 library(data.table)
