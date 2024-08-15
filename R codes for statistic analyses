@@ -1,4 +1,1415 @@
-git add 1.GITHUB_pub_MicrobiomeALL_MES.html
-git commit -m "Add HTML file"
-git remote add origin https://github.com/<username>/<repository-name>.git
-git push -u origin master
+Microbiome_Statistics_analysis_ALLpatients
+Maria Ebbesen Soerum
+August 10 2024
+#load packages:
+library(data.table)
+library(ggplot2)
+library(devtools)
+library(vegan)
+library(dplyr)
+library(nlme)     
+library(beeswarm)
+library(ggbeeswarm)
+library(phyloseq)
+library(remotes)
+library(metagenomeSeq)
+library(devtools)
+library(rabuplot) 
+library(Publish)
+library(cowplot) 
+library(speedyseq)
+ library(usedist)
+library(doParallel)
+library(copiome)
+library(abundance)
+library(ggpubr)
+library(tidyverse)
+library(mlbench)
+library(doMC)
+library(caret)
+library(pROC)
+library(mixOmics)
+library(mixOmicsCaret)  
+Data preparation
+Upload clincal data
+#clinical from 51 ALL patients and time-points during INDUCTION 
+clin2 <- read.csv("./MemOALL_Patients.Induction.alltimepoints_clinical.managed.data_without.duplicates_for.stat.analysis.article_KOPI.csv", header=TRUE, sep=";",dec=".", na.strings = c("", "NA", "NaN"), stringsAsFactors = FALSE)
+
+#upload wide-format clinical data only patients (N=51)
+clin_wide <- read.csv("./MemOALL_BASELINE_WIDEFORMAT_Patients.Induction.csv", header=TRUE, sep=";",dec=".", na.strings = c("", "NA", "NaN"), stringsAsFactors = FALSE)
+Upload mikrobiom data to phyloseq
+#Upload phyloseq microbiomdata for all 51 patients (N=185) + siblings during induction
+phy_obj <- readRDS("./Sequencing data_DTU_feces/Phyloseq_fecalsamples_withoutContaminants_ALLpatients.INDUCTION.NoDuplicates&siblings_PhDcohort_corrected.timepoints_Core.microbiome_N215_FINAL.RData")
+
+#create dataframe with all data except the microbiome data, such as MemOID
+#Add diversity (richness) measurements (Chao, Shannon and Observed)
+sample_data(phy_obj)  <- data.frame(get_variable(phy_obj),estimate_richness(phy_obj, measures=c("Chao1", "Shannon", "Observed")), stringsAsFactors = FALSE)
+sample_data(phy_obj)$seq_depth <- sample_sums(phy_obj)
+sample_data(phy_obj)$SampleName <- row.names(sample_data(phy_obj))
+
+#Merge with clinical data
+sample_data(phy_obj) <- cbind(data.frame(get_variable(phy_obj), stringsAsFactors = FALSE)[,!(names(data.frame(get_variable(phy_obj)))) %in% names(clin2)],clin2[match(sample_data(phy_obj)$SampleName, clin2$SampleName),!(names(clin2) %in% "SampleName")])
+#Make dataset (X) out of the clinical phyloseq object
+X <-data.frame(sample_data(phy_obj))
+X$SampleName <- rownames(X)
+#Remove siblings
+X1<- X[!is.na(X$treat.day.factor),] 
+Number of samples per patient
+#names(sample_data(phy_obj))
+sample_data(phy_obj)$treat.day.factor <- factor(sample_data(phy_obj)$treat.day.factor,levels=c("Day 1", "Day 8", "Day 15", "Day 22"  ,"Day 29"))
+#make a "samplelist" 
+samplelist <- X$SampleName[!is.na(X$SampleName)]
+perpt<- X1%>%filter(SampleName%in%samplelist)%>%group_by(memo_id)%>%dplyr::select(SampleName)%>%summarise(n_samples=n())
+sum(perpt$n_samples)
+summary(perpt$n_samples)
+Making additional PHYLOSEQ for analyses and figures including sibling samples
+#Upload phyloseq microbiomdata for all 51 patients (N=185) + siblings during induction
+phy_obj_sib <- readRDS("./Sequencing data_DTU_feces/Phyloseq_fecalsamples_withoutContaminants_ALLpatients.INDUCTION.NoDuplicates&siblings_PhDcohort_corrected.timepoints_Core.microbiome_N215_FINAL.RData")
+
+#create dataframe with all data except the microbiome data, such as MemOID
+#Add diversity (richness) measurements (Chao, Shannon and Observed)
+sample_data(phy_obj_sib)  <- data.frame(get_variable(phy_obj_sib),estimate_richness(phy_obj_sib, measures=c("Chao1", "Shannon", "Observed")), stringsAsFactors = FALSE)
+sample_data(phy_obj_sib)$seq_depth <- sample_sums(phy_obj_sib)
+sample_data(phy_obj_sib)$SampleName <- row.names(sample_data(phy_obj_sib))
+
+#Indlæser Clin-data med SØSKENDE
+#clinical from 51 ALL patients and time-points during INDUCTION 
+clinSIB <- read.csv("./MemOALL_SiblingsAndPatients.Induction.alltimepoints_clinical.managed.data_without.duplicates_for.stat.analysis.article.csv", header=TRUE, sep=";",dec=".", na.strings = c("", "NA", "NaN"), stringsAsFactors = FALSE)
+
+#Merge with clinical data
+sample_data(phy_obj_sib) <- cbind(data.frame(get_variable(phy_obj_sib), stringsAsFactors = FALSE)[,!(names(data.frame(get_variable(phy_obj_sib)))) %in% names(clinSIB)],clinSIB[match(sample_data(phy_obj_sib)$SampleName, clinSIB$SampleName),!(names(clinSIB) %in% "SampleName")])
+
+#names(sample_data(phy_obj_sib))
+sample_data(phy_obj_sib)$treat.day.factor <- factor(sample_data(phy_obj_sib)$treat.day.factor,levels=c("Day 1", "Day 8", "Day 15", "Day 22"  ,"Day 29", "0", "6"))
+
+#make unique sampleID
+sample_data(phy_obj_sib)$SampleName <- rownames(sample_data(phy_obj_sib))
+#Make dataset (Xsib) out of the clinical phyloseq object
+Xsib <-data.frame(sample_data(phy_obj_sib))
+Xsib$SampleName <- rownames(Xsib)
+#fjerner 6mdr søskende prøver 
+Xsib2<- subset(Xsib, Xsib$treat.day.factor != '6')
+Data analysis
+Changes over time in alpha diversity
+Mixed model analysis with unstructured variance-covariance matrix for each alpha measurements.
+Healthy siblings af reference
+#With siblings as reference, "treat.day.factor" = 0 refers to siblings
+#sum(is.na(Xsib2$Observed)) #no NAs
+#Occasion nr
+Xsib2$occasion_nr <- as.numeric(Xsib2$treat.day.factor)
+table(Xsib2$occasion_nr, Xsib2$treat.day.factor)
+summary(Xsib2$Observed)
+#Model observed richness
+obs.gls1 <- gls(log(Observed)~  relevel(treat.day.factor, ref="0"),   
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=Xsib2,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+#Model Shannon
+obs.gls2 <- gls(Shannon~relevel(treat.day.factor, ref="0"),   
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=Xsib2,
+                na.action = na.omit)
+summary(obs.gls2)$tTable
+intervals(obs.gls2)[["coef"]]
+Changes over time in alpha diversity: Analyses with patient samples day 1 as reference
+#sum(is.na(X1$Observed)) #no NAs
+#Occasion nr
+X1$occasion_nr <- as.numeric(X1$treat.day.factor)
+table(X1$occasion_nr, X1$treat.day.factor)
+summary(X1$Observed)
+#Model
+obs.gls1 <- gls(log(Observed)~treat.day.factor,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+#Overall test for time
+anova(obs.gls1, type="marginal") 
+
+#Model control ---> fits better when LOG-transformed 
+# normalized residuals vs fitted values:
+plot(obs.gls1, resid(., type = "normalized") ~ fitted(.), abline = 0) 
+##Normality assumption:
+qqnorm(obs.gls1, abline=c(0,1))
+
+# Including AB treatment
+obs.gls1 <- gls(log(Observed)~treat.day.factor + ab.yn_ind,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+# Including patient age
+obs.gls3 <- gls(log(Observed)~treat.day.factor + bs_age_diag,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+###Shannon index
+#Model Shannon
+obs.gls3 <- gls(Shannon~treat.day.factor,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+
+#estimated coefficients and p-values
+summary(obs.gls3)$tTable
+intervals(obs.gls3)[["coef"]]
+
+#Overall test for time
+anova(obs.gls3, type="marginal") 
+
+#Model control ---> SHANNON fits better when NOT log-transformed!
+# normalized residuals vs fitted values:
+plot(obs.gls3, resid(., type = "normalized") ~ fitted(.), abline = 0) 
+##Normality assumption:
+qqnorm(obs.gls3, abline=c(0,1))
+
+# Including antibiotic treatment yes/no
+obs.gls3 <- gls(Shannon~treat.day.factor+ ab.yn_ind,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+
+#estimated coefficients and p-values
+summary(obs.gls3)$tTable
+intervals(obs.gls3)[["coef"]]
+
+# Including patient age
+obs.gls3 <- gls(Shannon~treat.day.factor+ bs_age_diag,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+
+#estimated coefficients and p-values
+summary(obs.gls3)$tTable
+intervals(obs.gls3)[["coef"]]
+Testing other co-variates for association with diversity metrics
+# Sex
+obs.gls3 <- gls(log(Observed)~treat.day.factor + bs_gender,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+obs.gls3 <- gls(Shannon~treat.day.factor+ bs_gender,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+
+#estimated coefficients and p-values
+summary(obs.gls3)$tTable
+intervals(obs.gls3)[["coef"]]
+
+# ALL phenotype
+obs.gls3 <- gls(log(Observed)~treat.day.factor + bs_all_diag.factor,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+obs.gls3 <- gls(Shannon~treat.day.factor+ bs_all_diag.factor,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+
+#estimated coefficients and p-values
+summary(obs.gls3)$tTable
+intervals(obs.gls3)[["coef"]]
+
+# ALL induction regimen
+obs.gls3 <- gls(log(Observed)~treat.day.factor + bs_riskgroup1.factor,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+obs.gls3 <- gls(Shannon~treat.day.factor+ bs_riskgroup1.factor,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+
+#estimated coefficients and p-values
+summary(obs.gls3)$tTable
+intervals(obs.gls3)[["coef"]]
+
+## Treatment center
+obs.gls3 <- gls(log(Observed)~treat.day.factor + bs_site.factor,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+obs.gls3 <- gls(Shannon~treat.day.factor+ bs_site.factor,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+
+#estimated coefficients and p-values
+summary(obs.gls3)$tTable
+intervals(obs.gls3)[["coef"]]
+
+## Bacteremia
+obs.gls3 <- gls(log(Observed)~treat.day.factor + bacteremia.ind,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+#estimated coefficients and p-values
+summary(obs.gls1)$tTable
+intervals(obs.gls1)[["coef"]]
+exp(intervals(obs.gls1)$coef) 
+
+obs.gls3 <- gls(Shannon~treat.day.factor+ bacteremia.ind,  
+                correlation=corSymm(form= ~ occasion_nr|memo_id),
+                weights = varIdent(form=~1| treat.day.factor),
+                data=X1,
+                na.action = na.omit)
+
+#estimated coefficients and p-values
+summary(obs.gls3)$tTable
+intervals(obs.gls3)[["coef"]]
+Antibiotics
+Antibiotic subtypes and neutropenia day 36
+###
+table(X1.1$ab.group_pooledInd, X1.1$NeutropenicDay36)
+# Perform Fisher's Exact Test
+fisher_test <- fisher.test(X1.1$ab.group_pooledInd, X1.1$NeutropenicDay36)
+print(fisher_test)# No difference
+
+# AB associated with duration of neutropenia?
+X1.1ab <- subset(X1.1, X1.1$ab.group_pooledInd != 'NoAB')
+wilcox.test(X1.1ab$Days_neutropenic ~ X1.1ab$ab.group_pooledInd, data=X1.1ab) # P = 0.9
+wilcox.test(X1.1$Days_neutropenic ~ X1.1$ab.yn_ind, data=X1.1) # P = 0.02
+wilcox.test(X1.1$ab.dayson_ind ~ X1.1$NeutropenicDay36, data=X1.1) # P = 0.09
+fisher.test(X1.1$ab.yn_ind, X1.1$NeutropenicDay36) # p = 0.2
+Antibiotic subtypes and diversity at day 1
+X1.1 <- subset(X1, X1$treat.day.factor == 'Day 1')
+#Testing: Pip/tazo vs meropenem or meropenem+gentamycin
+kruskal.test(Observed ~ ab.group_day1, data = X1.1) #P=0.14
+Logistic regression with neutropenia day 36 Yes/No as outcome
+#Day 1 diversity
+##Observed 
+fit1 <- glm(NeutropenicDay36 ~ log2(Observed) , data=X1.1, family="binomial") 
+summary(fit1) #  P = 0.02
+pval <- coef(summary(fit1))[,4] #
+coefs <- exp(cbind(OR = coef(fit1), confint(fit1))) 
+coefs
+
+##Shannon day 1 
+fit2 <- glm(NeutropenicDay36 ~ log2(Shannon) , data=X1.1, family="binomial") 
+summary(fit2) # P = 0.047
+pval <- coef(summary(fit2))[,4] # 
+coefs <- exp(cbind(OR = coef(fit2), confint(fit2))) 
+coefs
+
+#Testing co-variates in univariate analyses (for supplemental table 4)
+#Use clin_wide dataset, since it includes all patients including those without fecal samples at day 1
+#Sex - NS 
+chisq.test(clin_wide$NeutropenicDay36, clin_wide$bs_gender) # P = 0.07
+
+#Age - NS
+summary(clin_wide$bs_age_diag)
+fit <- glm(NeutropenicDay36 ~  clin_wide$bs_age_diag, data=clin_wide, family="binomial") # Logistisk regression
+summary(fit) # P = 0.2
+
+#Phenotype
+clin_pheno <- subset(clin_wide, clin_wide$bs_all_diag != 3)
+table <- table(clin_pheno$NeutropenicDay36, clin_pheno$bs_all_diag)
+chisq.test(table)
+fisher.test(table)
+
+#Risk group
+table <- table(clin_wide$NeutropenicDay36, clin_wide$bs_riskgroup1)
+chisq.test(table)
+fisher.test(table)
+
+#BACTERIMIA - NS
+table(clin_wide$NeutropenicDay36, clin_wide$bacteremia.ind) 
+chisq.test(clin_wide$NeutropenicDay36, clin_wide$bacteremia.ind) # 
+fisher.test(clin_wide$NeutropenicDay36, clin_wide$bacteremia.ind) #
+
+#AB use Y/N - NS
+table(clin_wide$NeutropenicDay36, clin_wide$ab.yn_ind) 
+chisq.test(clin_wide$NeutropenicDay36, clin_wide$ab.yn_ind) 
+fisher.test(clin_wide$NeutropenicDay36, clin_wide$ab.yn_ind)
+
+#ANC at Day 1
+summary(clin_wide$neu_1)
+fit <- glm(NeutropenicDay36 ~  clin_wide$neu_1, data=clin_wide, family="binomial") # Logistisk regression
+summary(fit) # P = 0.3
+coefs <- exp(cbind(OR = coef(fit), confint(fit))) # Henter og konverterer koefficienter og konf. int. til OR + CI95
+coefs
+
+## Multivariate analysis ADJUSTING FOR age  
+fit1 <- glm(NeutropenicDay36 ~ log2(Observed)+ bs_age_diag , data=X1.1, family="binomial") 
+summary(fit1) 
+pval <- coef(summary(fit1))[,4] #
+coefs <- exp(cbind(OR = coef(fit1), confint(fit1))) 
+coefs
+
+fit2 <- glm(NeutropenicDay36 ~ Shannon + bs_age_diag , data=X1.1, family="binomial") 
+summary(fit2) 
+pval <- coef(summary(fit2))[,4] # 
+coefs <- exp(cbind(OR = coef(fit2), confint(fit2))) coefs
+ANC: Spearman’s rank correlations - all patients N=51
+##OBSERVED
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(1,8,15,22,29)){
+c1 <- cor.test(~Observed+neu, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+##SHANNON
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(1,8,15,22,29)){
+c1 <- cor.test(~Shannon+neu, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+Days with neutropenia during induction treatment: Spearman’s rank correlations
+##OBSERVED
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(1,8,15,22,29)){
+c1 <- cor.test(~Observed+Days_neutropenic, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+##SHANNON
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(1,8,15,22,29)){
+c1 <- cor.test(~Shannon+Days_neutropenic, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+G-CSF: Spearman’s rank correlations
+##OBSERVED
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~Observed+GCSF, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+#SHANNON
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~Shannon+GCSF, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+CXCL1: Spearman’s rank correlations
+## OBSERVED
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~Observed+CXCL1, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+## Shannon
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~Shannon+CXCL1, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+IL-8 (=CXCL8): Spearman’s rank correlations
+##OBSERVED
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~Observed+IL8, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+##SHANNON
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~Shannon+IL8, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+Correlations between outcome variables: Neutrophil signaling markers
+##CXCl1+CXCL8
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~CXCL1+IL8, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+##CXCl1+G-CSF
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~CXCL1+GCSF, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+##CXCl1+ANC
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~CXCL1+neu, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+##CXCl8+ANC
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~IL8+neu, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+##CXCl8+G-CSF
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~IL8+GCSF, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+
+##G-CSF+ANC
+corrs <- data.frame(Day=NA, rho=NA, p.value=NA)
+for(n in c(8,15,22,29)){
+c1 <- cor.test(~GCSF+neu, data=X1[X1$treat.day==n,], method="spearman")
+corrs<- rbind(corrs,c(n, c1$estimate, c1$p.value))
+}
+corrs <-corrs[-1,] 
+corrs$rho_rounded <- sprintf("%1.2f", corrs$rho)
+corrs$p.value_rounded <- sprintf("%1.3f", corrs$p.value)
+corrs
+BETA-DIVERSITY ANALYSES
+Beta-Diversity data preparations
+# Bray-Curtis calculations
+# Calculate distance matrix
+ phy_obj_bray_d <- distance(phy_obj, method="bray")
+# Calculate ordination 
+phy_obj_bray_o <- ordinate(phy_obj, method="PCoA", distance =phy_obj_bray_d)
+#add to data object
+ colnames(phy_obj_bray_o$vectors)[1:4] <- c("PC1_bray","PC2_bray","PC3_bray","PC4_bray")
+ sample_data(phy_obj) <- cbind(sample_data(phy_obj), phy_obj_bray_o$vectors[,1:4])
+ expl <- phy_obj_bray_o$values$Relative_eig[1:2]
+Plots beta-diversity divided by treatment days
+#Plot PC1+2 incl elipse for time points
+ ggplot(sample_data(phy_obj), aes(x=PC1_bray, y=PC2_bray))+ 
+  geom_point(aes(color=factor(treat.day.factor)), size=2.8)+
+    stat_ellipse(aes(color=factor(treat.day.factor)))+
+   theme_classic()+
+   xlab(paste0("PC1 (", round(expl[1]*100, 1), "%)")) +
+    ylab(paste0("PC2 (", round(expl[2]*100, 1), "%)")) +
+  theme(legend.position = "top", legend.title = element_text(size=12), legend.text = element_text(size=12), axis.title = element_text(size=14), axis.text = element_text(size=12))+
+  labs(title=paste0("By treatment day"))
+Plot og analysis between day 1 and siblings
+# Day 1 vs siblings - BRAY
+ ggplot(sample_data(phy_obj)[sample_data(phy_obj)$treat.day.factor.sib%in%c("Day 1", "Siblings"), ], aes(x=PC1_bray, y=PC2_bray))+ 
+  geom_point(aes(color=factor(treat.day.factor.sib)), size=2.8)+
+    stat_ellipse(aes(color=factor(treat.day.factor.sib)))+
+   theme_classic()+
+   xlab(paste0("PC1 (", round(expl[1]*100, 1), "%)")) +
+    ylab(paste0("PC2 (", round(expl[2]*100, 1), "%)")) +
+  theme(legend.position = "top", legend.title = element_text(size=12), legend.text = element_text(size=12), axis.title = element_text(size=14), axis.text = element_text(size=12))+
+  labs(title=paste0("By treatment day"))
+
+#day 1 vs siblings
+index <- get_variable(phy_obj,"treat.day.factor.sib") %in% c("Day 1", "Siblings")
+fit <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "treat.day.factor.sib")[index],  permutations = 999, by = "margin")
+ fit # P = 0.001
+BRAY-CURTIS beta-diversity for Neutropenic day 36 yes/no for treatment day 29
+# Analysis Day 29 
+index <- get_variable(phy_obj,"NeutropenicDay36") %in% c(1,0) & get_variable(phy_obj,"treat.day") =="29"
+fit29 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "NeutropenicDay36")[index],  permutations = 999, by = "margin")
+fit29
+BRAY-CURTIS beta-diversity for Neutropenic day 36 yes/no and additional treatment days (day 1, 8, 15 & 22)
+# Analysis Day 1
+index <- get_variable(phy_obj,"NeutropenicDay36") %in% c(1,0) & get_variable(phy_obj,"treat.day") =="1"
+fit1 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "NeutropenicDay36")[index],  permutations = 999, by = "margin")
+fit1
+# Analysis Day 8
+index <- get_variable(phy_obj,"NeutropenicDay36") %in% c(1,0) & get_variable(phy_obj,"treat.day") =="8"
+fit8 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "NeutropenicDay36")[index],  permutations = 999, by = "margin")
+fit8
+# Analysis Day 15
+index <- get_variable(phy_obj,"NeutropenicDay36") %in% c(1,0) & get_variable(phy_obj,"treat.day") =="15"
+fit15 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "NeutropenicDay36")[index],  permutations = 999, by = "margin")
+fit15
+# Analysis Day 22
+index <- get_variable(phy_obj,"NeutropenicDay36") %in% c(1,0) & get_variable(phy_obj,"treat.day") =="22"
+fit22 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "NeutropenicDay36")[index],  permutations = 999, by = "margin")
+fit22
+CXCL1, CXCL8 (IL8) and G-CSF and beta-diversity at day 29 as CONTINOUS OUTCOME
+## Day 29 (day 29 chosen because of most accumulated impact of treatment (antibiotics and chemotherapy) on gut microbiota at this latest treatment day)
+#CXCL1
+CXCL1 <- get_variable(phy_obj, "CXCL1")
+CXCL1_log <- log(CXCL1)
+sample_data(phy_obj)$CXCL1_log <- CXCL1_log
+sample_data_nona <- sample_data(phy_obj)[sample_data(phy_obj)$treat.day.factor %in% c("Day 29") & !is.na(sample_data(phy_obj)$CXCL1_log), ]
+
+ggplot(sample_data_nona, aes(x = PC1_bray, y = PC2_bray)) + 
+  geom_point(aes(color = CXCL1_log), size = 2.8) +
+  theme_classic() +
+  theme(legend.position = "top", 
+    legend.title = element_text(size = 12), 
+    legend.text = element_text(size = 12), 
+    axis.title = element_text(size = 14), 
+    axis.text = element_text(size = 12)
+  ) +
+  labs( title = paste0("Day 29 microbiome"),
+    color = "CXCL1 day 29 (log)")+
+  xlab("PC1") + 
+  ylab("PC2") +
+  annotate("text", x = 0.2, y = 0.38, label = "P = 0.045")
+
+# Analysis Day 29 
+index <- get_variable(phy_obj, "treat.day") == "29" & !is.na(CXCL1_log)
+fit29 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ CXCL1_log[index],permutations = 999,by = "margin")
+fit29
+
+#CXCL8
+CXCL8 <- get_variable(phy_obj, "IL8")
+CXCL8_log <- log(CXCL8)
+sample_data(phy_obj)$CXCL8_log <- CXCL8_log
+sample_data_nona <- sample_data(phy_obj)[sample_data(phy_obj)$treat.day.factor %in% c("Day 29") & !is.na(sample_data(phy_obj)$CXCL8_log), ]
+
+ggplot(sample_data_nona, aes(x = PC1_bray, y = PC2_bray)) + 
+  geom_point(aes(color = CXCL8_log), size = 2.8) +
+  theme_classic() +
+  theme(legend.position = "top", 
+    legend.title = element_text(size = 12), 
+    legend.text = element_text(size = 12), 
+    axis.title = element_text(size = 14), 
+    axis.text = element_text(size = 12)
+  ) +
+  labs( title = paste0("Day 29 microbiome"),
+    color = "CXCL8 day 29 (log)")+
+  xlab("PC1") + 
+  ylab("PC2")+
+    annotate("text", x = 0.2, y = 0.38, label = "P = 0.004")
+
+# Analysis Day 29 
+index <- get_variable(phy_obj, "treat.day") == "29" & !is.na(CXCL8_log)
+fit29 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ CXCL8_log[index],permutations = 999,by = "margin")
+fit29
+
+#G-CSF
+GCSF <- get_variable(phy_obj, "GCSF")
+GCSF_log <- log(GCSF)
+sample_data(phy_obj)$GCSF_log <- GCSF_log
+sample_data_nona <- sample_data(phy_obj)[sample_data(phy_obj)$treat.day.factor %in% c("Day 29") & !is.na(sample_data(phy_obj)$GCSF_log), ]
+
+ggplot(sample_data_nona, aes(x = PC1_bray, y = PC2_bray)) + 
+  geom_point(aes(color = GCSF_log), size = 2.8) +
+  theme_classic() +
+  theme(legend.position = "top", 
+    legend.title = element_text(size = 12), 
+    legend.text = element_text(size = 12), 
+    axis.title = element_text(size = 14), 
+    axis.text = element_text(size = 12)
+  ) +
+  labs( title = paste0("Day 29 microbiome"),
+    color = "G-CSF day 29 (log)")+
+  xlab("PC1") + 
+  ylab("PC2") +
+    annotate("text", x = 0.2, y = 0.38, label = "P = 0.02")
+
+# Analysis Day 29 
+index <- get_variable(phy_obj, "treat.day") == "29" & !is.na(GCSF_log)
+fit29 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ GCSF_log[index],permutations = 999,by = "margin")
+fit29
+CXCL1, CXCL8 (IL8) and G-CSF and beta-diversity at day 29
+With cytokines dichotomized at median level to create binary outcome for visualization with ellipses
+## Day 29 (day 29 chosen because of most accumulated impact of treatment (antibiotics and chemotherapy) on gut microbiota at this latest treatment day)
+# CXCL1, CXCL8 (IL8) and G-CSF dichotimed by median level at day 29 to compared to groups and illustrated by two elipses - FIGURE 3
+#CXCL1
+ggplot(sample_data(phy_obj)[sample_data(phy_obj)$treat.day.factor%in%c("Day 29"), ], aes(x=PC1_bray, y=PC2_bray))+ 
+  geom_point(aes(color=factor(cxcl1_aboveMedDay29)), size=2.8)+
+    stat_ellipse(aes(color=factor(cxcl1_aboveMedDay29)))+
+   theme_classic()+
+  theme(legend.position = "top", legend.title = element_text(size=12), legend.text = element_text(size=12), axis.title = element_text(size=14), axis.text = element_text(size=12))+
+  labs(title=paste0("Day 29 microbiome - By CXCL1 day 29"))
+# Analysis Day 29 
+index <- get_variable(phy_obj,"cxcl1_aboveMedDay29") %in% c(1,0) & get_variable(phy_obj,"treat.day") =="29"
+fit29 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "cxcl1_aboveMedDay29")[index],  permutations = 999, by = "margin")
+fit29
+
+#CXCL8
+ggplot(sample_data(phy_obj)[sample_data(phy_obj)$treat.day.factor%in%c("Day 29"), ], aes(x=PC1_bray, y=PC2_bray))+ 
+  geom_point(aes(color=factor(IL8_aboveMedDay29)), size=2.8)+
+    stat_ellipse(aes(color=factor(IL8_aboveMedDay29)))+
+   theme_classic()+
+  theme(legend.position = "top", legend.title = element_text(size=12), legend.text = element_text(size=12), axis.title = element_text(size=14), axis.text = element_text(size=12))+
+  labs(title=paste0("Day 29 microbiome - By CXCL8 day 29"))
+# Analysis Day 29 
+index <- get_variable(phy_obj,"IL8_aboveMedDay29") %in% c(1,0) & get_variable(phy_obj,"treat.day") =="29"
+fit29 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "IL8_aboveMedDay29")[index],  permutations = 999, by = "margin")
+fit29
+
+#G-CSF
+ggplot(sample_data(phy_obj)[sample_data(phy_obj)$treat.day.factor%in%c("Day 29"), ], aes(x=PC1_bray, y=PC2_bray))+ 
+  geom_point(aes(color=factor(GCSF_aboveMedDay29)), size=2.8)+
+    stat_ellipse(aes(color=factor(GCSF_aboveMedDay29)))+
+   theme_classic()+
+  theme(legend.position = "top", legend.title = element_text(size=12), legend.text = element_text(size=12), axis.title = element_text(size=14), axis.text = element_text(size=12))+
+  labs(title=paste0("Day 29 microbiome - By CXCL8 day 29"))
+# Analysis Day 29 
+index <- get_variable(phy_obj,"GCSF_aboveMedDay29") %in% c(1,0) & get_variable(phy_obj,"treat.day") =="29"
+fit29 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index,index] %>% as.dist ~ get_variable(phy_obj, "GCSF_aboveMedDay29")[index],  permutations = 999, by = "margin")
+fit29
+Additional time points for chemokines and G-CSF as continious variables and beta-diversity (treatment days 1, 8, 15 & 22)
+#CXCL1
+# Analysis Day 8 
+index <- get_variable(phy_obj, "treat.day") == "8" & !is.na(CXCL1_log)
+fit8 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ CXCL1_log[index],permutations = 999,by = "margin")
+fit8
+
+# Analysis Day 15 
+index <- get_variable(phy_obj, "treat.day") == "15" & !is.na(CXCL1_log)
+fit15 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ CXCL1_log[index],permutations = 999,by = "margin")
+fit15
+
+# Analysis Day 22 
+index <- get_variable(phy_obj, "treat.day") == "22" & !is.na(CXCL1_log)
+fit22 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ CXCL1_log[index],permutations = 999,by = "margin")
+fit22
+
+#CXCL8
+# Analysis Day 8 
+index <- get_variable(phy_obj, "treat.day") == "8" & !is.na(CXCL8_log)
+fit8 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ CXCL8_log[index],permutations = 999,by = "margin")
+fit8
+
+# Analysis Day 15 
+index <- get_variable(phy_obj, "treat.day") == "15" & !is.na(CXCL8_log)
+fit15 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ CXCL8_log[index],permutations = 999,by = "margin")
+fit15
+
+# Analysis Day 22 
+index <- get_variable(phy_obj, "treat.day") == "22" & !is.na(CXCL8_log)
+fit22 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ CXCL8_log[index],permutations = 999,by = "margin")
+fit22
+
+#G-CSF
+# Analysis Day 8 
+index <- get_variable(phy_obj, "treat.day") == "8" & !is.na(GCSF_log)
+fit8 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ GCSF_log[index],permutations = 999,by = "margin")
+fit8
+
+# Analysis Day 15 
+index <- get_variable(phy_obj, "treat.day") == "15" & !is.na(GCSF_log)
+fit15 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ GCSF_log[index],permutations = 999,by = "margin")
+fit15
+
+# Analysis Day 22 
+index <- get_variable(phy_obj, "treat.day") == "22" & !is.na(GCSF_log)
+fit22 <- adonis2(phy_obj_bray_d %>% as.matrix %>% .[index, index] %>% as.dist ~ GCSF_log[index],permutations = 999,by = "margin")
+fit22
+RELATIVE ABUNDANCE ANALYSES OF TAXA - AT GENUS LEVEL
+Data preparations
+For selection of bacterial genera for analyses (prevalence > 25%)
+#transpose 
+phy_obj@otu_table <- t(phy_obj@otu_table)
+#Check that taxa are rows  
+phy_obj@otu_table@taxa_are_rows
+#Create dataframe with relative abundances for each Geni in each sample 
+df_abundance <- abundance(phy_obj, level = "Genus", id  = 'SampleName', sample_id = 'treat.day.factor')
+# calculate mean relative abundance and prevalence på Genus-niveau - lidt som Ulrika ovenfor
+#lave datasæt med Mean relative abundances (mra) og prævalence
+  temp <- data.frame(tax = names(df_abundance[,3:206]),
+                   mra = colMeans(df_abundance[,3:206]),
+                   prevalence = colMeans(df_abundance[,3:206] > 0))
+  
+temp$selected_taxa <- ifelse(temp$prevalence >0.25, 'Keep','Remove')
+keep <- subset(temp, temp$selected_taxa == 'Keep')
+df_keep <- df_abundance[,names(df_abundance)%in%keep$tax]
+
+#make unique sampleID to merge
+df_keep$SampleName <- rownames(df_keep)
+#merge with clincal data incl. outcome
+df_keep <- merge(df_keep, X1 [, c("SampleName", "memo_id","treat.day.factor","NeutropenicDay36")] , by ='SampleName' ) # - OBS: fjerner siblings = 185 samples
+#Remove NA's
+df_keep <- df_keep[!is.na(df_keep$NeutropenicDay36), ]
+#add min-rel.abund to all 0-values (pseudocount, to me able to log-transform) 
+df_keep <- mutate(df_keep, across(-c(SampleName,treat.day.factor,memo_id,NeutropenicDay36),~(.x+min(.x[.x!=0]))))
+# Replace hyphens in the names of the genera columns
+colnames(df_keep) <- gsub("-", "", colnames(df_keep))
+# Check the updated column names
+print(colnames(df_keep))
+df_keep$occasion_nr <- as.numeric(df_keep$treat.day.factor)
+Dataframe with rel.abundance of all genera
+df_abundance <- abundance(phy_obj, level = "Genus", id  = 'SampleName', sample_id = 'treat.day.factor')# tilkobler clin-data
+#make unique sampleID to merge
+df_abundance$SampleName <- rownames(df_abundance)
+#merge with outcome
+df_abundance_neu <- merge(df_abundance, X1 [, c("SampleName",  "memo_id","NeutropenicDay36")] , by ='SampleName' ) # removing siblings = 185 samples
+#Remove NA's
+df_abundance_neu <- df_abundance_neu[!is.na(df_abundance_neu$NeutropenicDay36), ]
+#add min-rel.abund to all 0-values (pseudocount, to me able to log-transform) 
+df_abundance_neu <- mutate(df_abundance_neu, across(-c(SampleName,treat.day.factor,memo_id,NeutropenicDay36),~(.x+min(.x[.x!=0]))))
+# Replace hyphens in the names of the genera columns
+colnames(df_abundance_neu) <- gsub("-", "", colnames(df_abundance_neu))
+# Check the updated column names
+print(colnames(df_abundance_neu))
+df_abundance_neu$occasion_nr <- as.numeric(df_abundance_neu$treat.day.factor)
+Analyses of rel. abundances of genera over time all patients grouped together - mixed model analysis
+p_values_model1 <- list()
+for (genus in genera_ALL_day1) {
+  formula <- as.formula(paste("log(", genus, ") ~ treat.day.factor", sep = ""))
+  fit1 <- tryCatch({
+    lme(formula,
+        random = ~ 1 | memo_id,
+        data = df_keep,
+        weights = varIdent(form = ~ 1 | treat.day.factor),
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  if (!is.null(fit1)) {
+    p_values <- summary(fit1)$tTable[,"p-value"]
+    p_values_model1[[genus]] <- p_values[-1] 
+  }
+}
+p_values_dfall <- do.call(rbind, lapply(names(p_values_model1), function(genus) {
+  data.frame(Genus = genus, P_Value = p_values_model1[[genus]], row.names = NULL)
+}))
+# Apply BH FDR correction
+if (nrow(p_values_dfall) > 0) {
+  p_values_dfall$Adjusted_P_Value <- p.adjust(p_values_dfall$P_Value, method = "BH")
+  print("Combined P-values - Raw and Adjusted:")
+  print(p_values_dfall)
+  significant_p_values_df <- p_values_dfall[p_values_dfall$Adjusted_P_Value < 0.05, ]
+  print("Significant p-values (Adjusted < 0.05):")
+  print(significant_p_values_df)
+} else {
+  cat("No valid p-values found for combining.\n")
+}
+Mixed model (LME) for genera and prolonged neutropenia and False Discovery rate (FDR)-correction
+p_values_model1 <- list()
+Adjusted_P_Value <- list()
+for (genus in genera_ALL_day1) {
+  formula <- as.formula(paste("log(", genus, ") ~ treat.day.factor + NeutropenicDay36", sep = ""))
+  fit1 <- tryCatch({
+    lme(formula,
+        random = ~ 1 | memo_id,
+        data = df_abundance_neu,
+        weights = varIdent(form = ~ 1 | treat.day.factor),
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  if (!is.null(fit1)) {
+    p_value <- summary(fit1)$tTable["NeutropenicDay361","p-value"]
+    p_values_model1[[genus]] <- p_value
+  }
+}
+p_values_dfneu <- data.frame(Genus = names(p_values_model1), P_Value = unlist(p_values_model1))
+# Apply BH FDR correction
+p_values_dfneu$Adjusted_P_Value <- p.adjust(p_values_dfneu$P_Value, method = "BH")
+print(p_values_dfneu)
+significant_p_values_neu <- p_values_dfneu[p_values_dfneu$Adjusted_P_Value < 0.05, ]
+print(significant_p_values_neu)
+Rel. Abundances and Neutrophil signaling markers (CXCL1, CXCL8 (IL8) and G-CSF)
+Make dataset with cytokines levels instead of neutropenia
+#merge with outcome
+df_abundance_cyto <- merge(df_abundance, X1 [, c("SampleName",  "IL8max_aboveMed","memo_id","cxcl1max_above201","max.il8_8.29","max.cxcl1_8.29","max.gcsf_8.29","GCSFmax_aboveMed","bs_age_diag")] , by ='SampleName' ) #
+#Remove NA's
+df_abundance_cyto <- df_abundance_cyto[!is.na(df_abundance_cyto$IL8max_aboveMed), ]
+df_abundance_cyto <- mutate(df_abundance_cyto, across(-c(IL8max_aboveMed,SampleName,treat.day.factor,memo_id,cxcl1max_above201,GCSFmax_aboveMed,max.il8_8.29,max.cxcl1_8.29,max.gcsf_8.29,bs_age_diag),~(.x+min(.x[.x!=0]))))
+# Replace hyphens in the names of the genera columns
+colnames(df_abundance_cyto) <- gsub("-", "", colnames(df_abundance_cyto))
+df_abundance_cyto$occasion_nr <- as.numeric(df_abundance_cyto$treat.day.factor)
+CXCL1
+First: test to see if interaction between treat day and CXCL1 should be included in final model
+ANOVA for comparisson of MODELS (with and without interaction with treat day) for continuous CXCLmax
+anova_results <- list()
+p_values <- list()
+for (genus in genera_ALL_day1) {
+  # Construct formulas
+  formula1 <- as.formula(paste("log_", genus, " ~ treat.day.factor + log(max.cxcl1_8.29) | memo_id", sep = ""))
+  formula2 <- as.formula(paste("log_", genus, " ~ treat.day.factor * log(max.cxcl1_8.29) | memo_id", sep = ""))
+
+  fit1 <- tryCatch({
+    lme(formula1,
+        correlation = corSymm(form = ~ occasion_nr | memo_id),
+        weights = varIdent(form = ~1 | treat.day.factor),
+        data = df_abundance_cyto,
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        method = "ML",  # 
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  fit.2 <- tryCatch({
+    lme(formula2,
+        correlation = corSymm(form = ~ occasion_nr | memo_id),
+        weights = varIdent(form = ~1 | treat.day.factor),
+        data = df_abundance_cyto,
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        method = "ML",  # Maximum likelihood estimation
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  list_of_models[[genus]] <- list(fit1 = fit1, fit.2 = fit.2)
+  
+  if (!is.null(fit1) && !is.null(fit.2)) {
+    anova_result <- anova(update(fit1, method = "ML"), update(fit.2, method = "ML"))
+    anova_results[[genus]] <- anova_result
+    p_value <- anova_result$`Pr(>F)`[2]  # 
+    p_values[[genus]] <- p_value
+    
+    if (p_value < 0.05) {
+      cat("P-value for ANOVA Comparison for", genus, ":", p_value, "\n")
+    }
+  } else {
+    cat("Models not fitted for genus:", genus, "\n")
+  }
+}
+p_values_df <- data.frame(Genus = names(p_values), P_Value = unlist(p_values))
+print(p_values_df[p_values_df$P_Value < 0.05, ])
+genera_ALL_58ny_withinteraktionCXCL1 <- p_values_df$Genus[p_values_df$P_Value < 0.05]
+genera_ALL_58ny_nointeraktionCXCL1 <- setdiff(genera_ALL_58ny, genera_ALL_58ny_withinteraktionCXCL1)
+print("Genera with significant interaction (p < 0.05):")
+print(genera_ALL_58ny_withinteraktionCXCL1)
+print("Genera without significant interaction (p >= 0.05):")
+print(genera_ALL_58ny_nointeraktionCXCL1)
+CXCL1 and relative abundance MIXED Model LME (without interaction with timepoint since no genera showed interaction needed to be included)
+p_values_model1 <- list()
+Adjusted_P_Value <- list()
+for (genus in genera_ALL_day1) {
+  formula <- as.formula(paste("log(", genus, ") ~ treat.day.factor + log(max.cxcl1_8.29)", sep = ""))
+  fit1 <- tryCatch({
+    lme(formula,
+        random = ~ 1 | memo_id,
+        data = df_abundance_cyto,
+        weights = varIdent(form = ~ 1 | treat.day.factor),
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  if (!is.null(fit1)) {
+    p_value <- summary(fit1)$tTable["log(max.cxcl1_8.29)","p-value"]
+    p_values_model1[[genus]] <- p_value
+  }
+}
+p_values_dfcxcl1 <- data.frame(Genus = names(p_values_model1), P_Value = unlist(p_values_model1))
+# Apply BH FDR correction
+p_values_dfcxcl1$Adjusted_P_Value <- p.adjust(p_values_dfcxcl1$P_Value, method = "BH")
+print(p_values_dfcxcl1)
+significant_p_values_cxcl1 <- p_values_dfcxcl1[p_values_dfcxcl1$Adjusted_P_Value < 0.05, ]
+print(significant_p_values_cxcl1)
+CXCL8 (IL-8)
+First: test to see if interaction between treat day and CXCL1 should be included in final model
+ANOVA for comparisson of MODELS (with and without interaction with treat day) for continuous CXCLmax
+anova_results <- list()
+p_values <- list()
+
+for (genus in genera_ALL_day1) {
+  # Construct formulas
+  formula1 <- as.formula(paste("log_", genus, " ~ treat.day.factor + log(max.il8_8.29) | memo_id", sep = ""))
+  formula2 <- as.formula(paste("log_", genus, " ~ treat.day.factor * log(max.il8_8.29) | memo_id", sep = ""))
+  
+  # Fit model 1 (lme)
+  fit1 <- tryCatch({
+    lme(formula1,
+        correlation = corSymm(form = ~ occasion_nr | memo_id),
+        weights = varIdent(form = ~1 | treat.day.factor),
+        data = df_abundance_cyto,
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        method = "ML",  # Maximum likelihood estimation
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  
+  # Fit model 2 (lme)
+  fit.2 <- tryCatch({
+    lme(formula2,
+        correlation = corSymm(form = ~ occasion_nr | memo_id),
+        weights = varIdent(form = ~1 | treat.day.factor),
+        data = df_abundance_cyto,
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        method = "ML",  # Maximum likelihood estimation
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  
+  list_of_models[[genus]] <- list(fit1 = fit1, fit.2 = fit.2)
+  # Perform ANOVA to compare fit of fit.1 and fit.2
+  if (!is.null(fit1) && !is.null(fit.2)) {
+    anova_result <- anova(update(fit1, method = "ML"), update(fit.2, method = "ML"))
+    anova_results[[genus]] <- anova_result
+    p_value <- anova_result$`Pr(>F)`[2]  # Extract p-value
+    p_values[[genus]] <- p_value
+    
+    if (p_value < 0.05) {
+      cat("P-value for ANOVA Comparison for", genus, ":", p_value, "\n")
+    }
+  } else {
+    cat("Models not fitted for genus:", genus, "\n")
+  }
+}
+p_values_df <- data.frame(Genus = names(p_values), P_Value = unlist(p_values))
+print(p_values_df[p_values_df$P_Value < 0.05, ])
+genera_ALL_58ny_withinteraktionIL8 <- p_values_df$Genus[p_values_df$P_Value < 0.05]
+genera_ALL_58ny_nointeraktionIL8 <- setdiff(genera_ALL_58ny, genera_ALL_58ny_withinteraktionIL8)
+print("Genera with significant interaction (p < 0.05):")
+print(genera_ALL_58ny_withinteraktionIL8)
+print("Genera without significant interaction (p >= 0.05):")
+print(genera_ALL_58ny_nointeraktionIL8)
+CXCL8 and relative abundance MIXED Model LME (without interaction with timepoint since no genera showed interaction needed to be included)
+p_values_model1 <- list()
+Adjusted_P_Value <- list()
+for (genus in genera_ALL_day1) {
+  formula <- as.formula(paste("log(", genus, ") ~ treat.day.factor + log(max.il8_8.29)", sep = ""))
+  fit1 <- tryCatch({
+    lme(formula,
+        random = ~ 1 | memo_id,
+        data = df_abundance_cyto,
+        weights = varIdent(form = ~ 1 | treat.day.factor),
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  if (!is.null(fit1)) {
+    p_value <- summary(fit1)$tTable["log(max.il8_8.29)","p-value"]
+    p_values_model1[[genus]] <- p_value
+  }
+}
+p_values_dfIL8 <- data.frame(Genus = names(p_values_model1), P_Value = unlist(p_values_model1))
+# Apply BH FDR correction
+p_values_dfIL8$Adjusted_P_Value <- p.adjust(p_values_dfIL8$P_Value, method = "BH")
+print(p_values_dfIL8)
+significant_p_values_IL8 <- p_values_dfIL8[p_values_dfIL8$Adjusted_P_Value < 0.05, ]
+print(significant_p_values_IL8)
+genera_IL8 <- significant_p_values_IL8$Genus
+G-CSF
+First: test to see if interaction between treat day and CXCL1 should be included in final model
+ANOVA for comparisson of MODELS (with and without interaction with treat day) for continuous CXCLmax
+anova_results <- list()
+p_values <- list()
+for (genus in genera_ALL_day1) {
+  # Construct formulas
+  formula1 <- as.formula(paste("log_", genus, " ~ treat.day.factor + log(max.gcsf_8.29) | memo_id", sep = ""))
+  formula2 <- as.formula(paste("log_", genus, " ~ treat.day.factor * log(max.gcsf_8.29) | memo_id", sep = ""))
+  
+  # Fit model 1 (lme)
+  fit1 <- tryCatch({
+    lme(formula1,
+        correlation = corSymm(form = ~ occasion_nr | memo_id),
+        weights = varIdent(form = ~1 | treat.day.factor),
+        data = df_abundance_cyto,
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        method = "ML",  
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  
+  # Fit model 2 (lme)
+  fit.2 <- tryCatch({
+    lme(formula2,
+        correlation = corSymm(form = ~ occasion_nr | memo_id),
+        weights = varIdent(form = ~1 | treat.day.factor),
+        data = df_abundance_cyto,
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        method = "ML",  
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  list_of_models[[genus]] <- list(fit1 = fit1, fit.2 = fit.2)
+  
+  # Perform ANOVA to compare fit of fit.1 and fit.2
+  if (!is.null(fit1) && !is.null(fit.2)) {
+    anova_result <- anova(update(fit1, method = "ML"), update(fit.2, method = "ML"))
+    anova_results[[genus]] <- anova_result
+    p_value <- anova_result$`Pr(>F)`[2] 
+    p_values[[genus]] <- p_value
+  
+    if (p_value < 0.05) {
+      cat("P-value for ANOVA Comparison for", genus, ":", p_value, "\n")
+    }
+  } else {
+    cat("Models not fitted for genus:", genus, "\n")
+  }
+}
+p_values_df <- data.frame(Genus = names(p_values), P_Value = unlist(p_values))
+print(p_values_df[p_values_df$P_Value < 0.05, ])
+genera_ALL_58ny_withinteraktiongcsf <- p_values_df$Genus[p_values_df$P_Value < 0.05]
+genera_ALL_58ny_nointeraktiongcsf <- setdiff(genera_ALL_58ny, genera_ALL_58ny_withinteraktiongcsf)
+print("Genera with significant interaction (p < 0.05):")
+print(genera_ALL_58ny_withinteraktiongcsf)
+print("Genera without significant interaction (p >= 0.05):")
+print(genera_ALL_58ny_nointeraktiongcsf)
+G-CSF and relative abundance MIXED Model LME (without interaction with timepoint since no genera showed interaction needed to be included)
+p_values_model1 <- list()
+Adjusted_P_Value <- list()
+for (genus in genera_ALL_day1) {
+  formula <- as.formula(paste("log(", genus, ") ~ treat.day.factor + log(max.gcsf_8.29)", sep = ""))
+  fit1 <- tryCatch({
+    lme(formula,
+        random = ~ 1 | memo_id,
+        data = df_abundance_cyto,
+        weights = varIdent(form = ~ 1 | treat.day.factor),
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  if (!is.null(fit1)) {
+    p_value <- summary(fit1)$tTable["log(max.gcsf_8.29)","p-value"]
+    p_values_model1[[genus]] <- p_value
+  }
+}
+p_values_dfgcsf <- data.frame(Genus = names(p_values_model1), P_Value = unlist(p_values_model1))
+# Apply BH FDR correction
+p_values_dfgcsf$Adjusted_P_Value <- p.adjust(p_values_dfgcsf$P_Value, method = "BH")
+print(p_values_dfgcsf)
+significant_p_values_gcsf <- p_values_dfgcsf[p_values_dfgcsf$Adjusted_P_Value < 0.05, ]
+print(significant_p_values_gcsf)
+Adjust CXL8max model for age
+LMM model - only without interaction for time (since no interaction needed for any genera) and printing fdr P-values
+p_values_model1 <- list()
+Adjusted_P_Value <- list()
+for (genus in genera_IL8) {
+  formula <- as.formula(paste("log(", genus, ") ~ treat.day.factor + log(max.il8_8.29) + bs_age_diag", sep = ""))
+  fit1 <- tryCatch({
+    lme(formula,
+        random = ~ 1 | memo_id,
+        data = df_abundance_cyto,
+        weights = varIdent(form = ~ 1 | treat.day.factor),
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  if (!is.null(fit1)) {
+    p_value <- summary(fit1)$tTable["log(max.il8_8.29)","p-value"]
+    p_values_model1[[genus]] <- p_value
+  }
+}
+p_values_dfIL8a <- data.frame(Genus = names(p_values_model1), P_Value = unlist(p_values_model1))
+# Apply BH FDR correction
+p_values_dfIL8a$Adjusted_P_Value <- p.adjust(p_values_dfIL8a$P_Value, method = "BH")
+print(p_values_dfIL8a)
+significant_p_values_IL8a <- p_values_dfIL8a[p_values_dfIL8a$Adjusted_P_Value < 0.05, ]
+print(significant_p_values_IL8a)
+Dichotomized CXCL8max at the median level for visualization: FIGURE 6
+LMM without interaction with treat day
+p_values_model1 <- list()
+Adjusted_P_Value <- list()
+for (genus in genera_ALL_day1) {
+  formula <- as.formula(paste("log(", genus, ") ~ treat.day.factor + IL8max_aboveMed", sep = ""))
+  fit1 <- tryCatch({
+    lme(formula,
+        random = ~ 1 | memo_id,
+        data = df_abundance_cyto,
+        weights = varIdent(form = ~ 1 | treat.day.factor),
+        control = lmeControl(maxIter = 100, msMaxIter = 100),
+        na.action = na.omit)
+  }, error = function(e) {
+    message(paste("Error fitting model for genus:", genus))
+    return(NULL)
+  })
+  if (!is.null(fit1)) {
+    p_value <- summary(fit1)$tTable["IL8max_aboveMed1","p-value"]
+    p_values_model1[[genus]] <- p_value
+  }
+}
+p_values_dfdic <- data.frame(Genus = names(p_values_model1), P_Value = unlist(p_values_model1))
+# Apply BH FDR correction
+p_values_dfdic$Adjusted_P_Value <- p.adjust(p_values_dfdic$P_Value, method = "BH")
+print(p_values_dfdic)
+significant_p_values_dic <- p_values_dfdic[p_values_dfdic$Adjusted_P_Value < 0.05, ]
+print(significant_p_values_dic)
+Microbiome at day 1
+Siblings and Day 1 composition comparision - Figure 5A
+# Laver nyt phyloseq obj kun for 1 treat.day + Siblings
+Phy_obj_day1sib <- subset_samples(phy_obj_sib,treat.day.factor == c("Day 1","0"))
+#violin plot inkl ONLY SIGNIFICANT between days 
+p <- rabuplot(Phy_obj_day1sib, type="genus",N_taxa = 48,Only_sig = T,predictor="treat.day.factor",p_adjust = F, main =  "", legend_title = "", legend_names = c("Patients day 1 ","Siblings"), xlabs = "", colors = c("Dark orange","Dark green"))
+fig5A <- p + theme(legend.position = "top", 
+        legend.title = element_text(size=12), legend.text = element_text(size=16) )
+sPLS model in order to predict risk of neutropenia day 36 by the microbiota day 1
+Data preaparation
+########### DAY 1 #######################
+Phy_obj_day1 <- subset_samples(phy_obj,treat.day.factor == "Day 1")
+df_abundance_day1 <- abundance(Phy_obj_day1, level = "Genus", id  = 'SampleName', sample_id = 'treat.day.factor')
+  temp_day1 <- data.frame(tax = names(df_abundance_day1[,3:176]),
+                   mra = colMeans(df_abundance_day1[,3:176]),
+                   prevalence = colMeans(df_abundance_day1[,3:176] > 0))
+temp_day1$selected_taxa <- ifelse(temp_day1$prevalence >0.25, 'Keep','Remove')
+temp_day1<- temp_day1[order(temp_day1$prevalence), ]
+keep_day1 <- subset(temp_day1, temp_day1$selected_taxa == 'Keep')
+
+df_keep_day1 <- df_abundance_day1[,names(df_abundance_day1)%in%keep_day1$tax]
+# add clin-data
+#make unique sampleID to merge
+df_keep_day1$SampleName <- rownames(df_keep_day1)
+#merge with outcome
+df_keep_day1 <- merge(df_keep_day1, X1 [, c("SampleName",  "NeutropenicDay36")] , by ='SampleName' ) 
+#remove samplename-column again
+df_keep_day1$SampleName -> rownames(df_keep_day1)
+df_keep_day1$SampleName <- NULL
+#Remove NA's
+df_keep_day1 <- df_keep_day1[!is.na(df_keep_day1$NeutropenicDay36), ]
+#log-transform rel.abundances of all genera (NB: add min-value (not zero) to all = pseudocount)
+df_keep_day1 <- mutate(df_keep_day1, across(-NeutropenicDay36,~log(.x+min(.x[.x!=0]))))
+registerDoMC(cores = 7)
+repCV10 <- trainControl(method = "repeatedcv", 
+                       number = 5,
+                       repeats = 5,
+                         
+                        returnResamp = "all", 
+                        savePredictions = "all", 
+                        allowParallel = T, 
+                        verboseIter = F)
+
+set.seed(123)
+Day1PLS <- train(as.numeric(NeutropenicDay36 == 1) ~ ., data = df_keep_day1,
+                  method = get_mixOmics_spls(),
+                  preProc = c("center", "scale"),
+                  tuneGrid = expand.grid(ncomp = 1:5, 
+                                         keepX = c(1, 2, 4, 8, 16, 25, 40, 50, 65), 
+                                         keepY = 1),
+                  trControl = repCV10,
+                  fixX = c())
+
+#Check number of variables to include in model:
+ggplot(Day1PLS, metric = "RMSE")
+ggplot(Day1PLS, metric = "Rsquared")
+#shows 80 keepX fits best
+
+Day1PLS$pred %>%
+  separate(Resample, c("Fold", "Rep")) %>%
+  group_by(ncomp, keepX, Rep) %>%
+  summarize(auc = pROC::auc(predictor = pred, obs, direction = "<") %>% as.numeric) %>%
+  ggplot(aes(x = factor(keepX), y = auc)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(aes(color = factor(ncomp)), alpha = 0.2, show.legend = FALSE) +
+    geom_hline(yintercept = 0.5) +
+    facet_grid(. ~ ncomp) +
+    scale_color_brewer(palette = "Set1", name = NULL) +
+    theme_bw() + theme(strip.background = element_blank()) +
+    xlab("Number of variables")
+
+
+# Retrieve the predictions from the optimal model
+bestSet <- Day1PLS %>% get_best_predictions %>% group_by(Rep) 
+aucs <-bestSet %>% 
+  summarize(auc = pROC::auc(obs, pred, direction = "<") %>% as.numeric) %>% 
+  arrange(auc)
+summary(aucs$auc)
+
+savedPreds <- Day1PLS %>% get_best_predictions %>% filter(Rep == "Rep4")
+# Best CV predictions
+cvauc <- auc(obs ~ pred, data = savedPreds, direction = "<")
+qplot(ifelse(obs == 1, "Yes", "No"), pred, data = savedPreds, geom = c("boxplot", "jitter")) + 
+  xlab("NeutropenicDay36") +
+  ylab("predictions") +
+  ggtitle(paste0("CV AUC = ", round(cvauc, 3)))
+#Prepare for plotting
+# Retrieve the predictions with the best 
+detach("package:dplyr")
+library(dplyr)
+Day1PLS %>%get_loadings %>% head # Returns a data.frame for easy plotting
+
+Day1PLS %>% get_loadings("CV", rep = "Rep4") %>% 
+  ggplot(aes(var, loading, ymin = loading - sd, ymax = loading + sd)) + 
+  facet_wrap(~ comp, scales = "free_x") + 
+  geom_errorbar() + 
+  geom_bar(stat = "identity") + 
+  ggtitle("CV, median rep (Rep4)")
+
+Model1<- Day1PLS %>% get_loadings("finalModel")
+#order
+Model1<- Model1[order(Model1$loading),]
+Code for loading plot - FIGURE 5B sPLS model LOADING PLOT
+Model1$loading_sign <- ifelse(Model1$loading > 0, "Positive", "Negative")
+positive_color <- "brown3"
+negative_color <- "peachpuff4"
+
+# Genera to highlight
+highlight_labels <- c("Coprococcus_1", "Dorea", "Roseburia", "`Erysipelotrichaceae_UCG-003`", "Veillonella", "`Ruminococcaceae_UCG-004`", "`Ruminococcaceae_UCG-002`", "Sutterella", "Collinsella", "Subdoligranulum")
+
+Model1$loading_group <- ifelse(Model1$var %in% highlight_labels, "Highlighted",
+                               ifelse(Model1$loading > 0, "Positive_Not_Highlighted", "Negative_Not_Highlighted"))
+
+fig5b <- ggplot(data = Model1, aes(reorder(var, -loading), loading, ymin = loading - sd, ymax = loading + sd)) + 
+  geom_errorbar() + 
+  geom_bar(stat = "identity", aes(fill = loading_group)) +
+  scale_fill_manual(values = c("Highlighted" = "saddlebrown", "Positive_Not_Highlighted" = positive_color, "Negative_Not_Highlighted" = negative_color), name = "Loading Group") +
+  ggtitle("") +
+  xlab('') +
+  ylab('Loading') +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1, size = 8),
+    panel.background = element_rect(fill = "white"),
+    panel.grid.major.y = element_blank(), # Remove horizontal major grid lines
+    panel.grid.minor.y = element_blank(), # Remove horizontal minor grid lines
+    panel.grid.major.x = element_line(color = "grey"), # Keep vertical major grid lines
+    panel.grid.minor.x = element_line(color = "grey") # Keep vertical minor grid lines
+  ) +
+  guides(fill = FALSE) +
+  scale_x_discrete(labels = function(x) {
+    ifelse(x %in% highlight_labels, paste0("**", x, "**"), x)
+  }) +
+  coord_flip()
+AUC cross validation boxplot - Figure 5C
+fig5c <- ggplot(savedPreds, aes(x = factor(obs), y = pred, fill = factor(obs), color = factor(obs))) +
+  geom_boxplot(outlier.shape = 16, width = 0.5, size = 1.1, fill = "white") +  # Set fill to "white"
+  labs(y = "Predictions", title = paste0("CV AUC = 0.68 (0.63-0.69)"), x = "Neutropenic Day 36", fontface = 'bold') +
+  geom_beeswarm(cex = 1.2, shape = 16) +
+  geom_jitter() +
+  scale_x_discrete(labels = c("No", "Yes")) +
+  scale_fill_manual(values = c("grey26", "#CC6666"), name = "Neutropenia on day 36", breaks = c("0", "1"), labels = c("No", "Yes"), guide = FALSE) +
+  scale_color_manual(values = c("grey26", "#CC6666"), name = "Neutropenia on day 36", breaks = c("0", "1"), labels = c("No", "Yes"), guide = FALSE) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor.x = element_line(colour = "grey"),  # Set minor grid lines color for x-axis
+        panel.grid.minor.y = element_line(colour = "grey"),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust = 0.5, size = 14, face = 'bold'),
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10)
+  )
+Preparation for univariate analyses for Figure 5D
+#Selection criteria: Loading < -0.15 or > 0.1
+genera_sPLS <- Model1 %>%
+  filter(loading < -0.15 | loading > 0.1) %>%
+  select(var) %>%
+  pull()
+# Replace hyphens in the names of the genera columns
+genera_sPLS <- gsub("-", "", genera_sPLS)
+
+# Replace hyphens in the names of the genera columns
+df_keep_day1_1 <- df_keep_day1
+colnames(df_keep_day1_1) <- gsub("-", "", colnames(df_keep_day1_1))
+Univariate non-parametric analyses (wilcoxon) of relative abundance of selected genera (from sPLS model above) and neutropenia group. With fdr-corrected P-values
+p_values <- list()
+for (genus in genera_sPLS) {
+  formula <- as.formula(paste(genus, "~ NeutropenicDay36", sep = ""))
+  test_result <- wilcox.test(formula, data = df_keep_day1_1)
+  p_values[[genus]] <- test_result$p.value
+}
+p_values_df <- data.frame(Genus = names(p_values), P_Value = unlist(p_values))
+
+# Apply BH FDR correction to the p-values
+p_values_df$Adjusted_P_Value <- p.adjust(p_values_df$P_Value, method = "BH")
+print("Combined P-values - Raw and Adjusted:")
+print(p_values_df)
+significant_p_values_df <- p_values_df[p_values_df$P_Value < 0.05, ]
+print("Significant p-values (Single P < 0.05):")
+print(significant_p_values_df)
